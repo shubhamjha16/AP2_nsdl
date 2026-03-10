@@ -1,9 +1,10 @@
 import json
 from ap2.types.mandate import CartContents, CartMandate, SecuritiesIntentMandate, SecuritiesMandate, PaymentMandate, PaymentMandateContents
-from ap2.types.payment_request import PaymentRequest, PaymentDetailsInit, PaymentItem, PaymentCurrencyAmount, PaymentMethodData
-from ap2.types.payment_response import PaymentResponse
-from ap2.crypto_utils import generate_key_pair, get_private_key_pem, sign_cart_mandate, sign_payment_mandate, hash_object
+from ap2.types.payment_request import PaymentRequest, PaymentDetailsInit, PaymentItem, PaymentCurrencyAmount, PaymentMethodData, PaymentResponse
+from ap2.crypto_utils import generate_key_pair, get_private_key_pem, get_public_key_pem, sign_cart_mandate, sign_payment_mandate, hash_object
 from datetime import datetime, timedelta, timezone
+
+from nsdl_depository_agent import NSDLDepositoryGateway
 
 def run_nsdl_instruction_demo():
     print("--- Day 5: NSDL Depository Operations (Securities Transfer) ---")
@@ -14,7 +15,13 @@ def run_nsdl_instruction_demo():
     investor_priv, investor_pub = generate_key_pair()
 
     dp_priv_pem = get_private_key_pem(dp_priv)
+    dp_pub_pem = get_public_key_pem(dp_pub)
     investor_priv_pem = get_private_key_pem(investor_priv)
+    investor_pub_pem = get_public_key_pem(investor_pub)
+
+    # Initialize NSDL Gateway
+    gateway = NSDLDepositoryGateway()
+    gateway.register_investor_key("INVESTOR_001", investor_pub_pem)
 
     # 2. Create a Securities Intent Mandate (The "Digital DIS")
     print("\n[Step 2] Investor Creating Securities Intent Mandate (Digital DIS)...")
@@ -34,12 +41,10 @@ def run_nsdl_instruction_demo():
         securities_details=sec_details
     )
     print(f"Intent: {intent.natural_language_description}")
-    print(f"ISIN: {intent.securities_details.isin} | Quantity: {intent.securities_details.quantity}")
 
     # 3. DP (Acting as Merchant) creates and signs a CartMandate
     print("\n[Step 3] DP Generating Signed Instruction Confirmation (CartMandate)...")
     
-    # In securities, the "PaymentRequest" can include stamp duty and transaction charges
     payment_request = PaymentRequest(
         method_data=[PaymentMethodData(supported_methods="DP_WALLET")],
         details=PaymentDetailsInit(
@@ -63,7 +68,7 @@ def run_nsdl_instruction_demo():
     cart_mandate = CartMandate(contents=contents)
     cart_mandate.merchant_authorization = sign_cart_mandate(contents.model_dump(), dp_priv_pem)
 
-    print(f"DP Auth Signature (JWT): {cart_mandate.merchant_authorization[:50]}...")
+    print(f"DP Auth Signature (JWT) generated.")
 
     # 4. Investor Authorizes with a PaymentMandate (Final Authorization)
     print("\n[Step 4] Investor Signing Final Authorization (PaymentMandate)...")
@@ -92,13 +97,19 @@ def run_nsdl_instruction_demo():
         investor_priv_pem
     )
 
-    print(f"Investor Auth Signature (JWT): {payment_mandate.user_authorization[:50]}...")
+    print(f"Investor Auth Signature (JWT) generated.")
 
-    print("\n[Success] NSDL Instruction Verified!")
-    print("Verifiable chain established: Investor -> DP -> NSDL Settlement.")
+    # 5. NSDL Final Verification & Settlement
+    print("\n[Step 5] DP Submitting Instruction to NSDL for Final Settlement...")
+    result = gateway.verify_and_settle(json.dumps(payment_mandate.model_dump()))
+    
+    if result["success"]:
+        print("\n[SUCCESS] NSDL Transaction Settled. TXN ID:", result["txn_id"])
+        print("Protocol Integrity Proof: RSA Signature Verified | SHA-256 Hashes Matched.")
+    else:
+        print("\n[FAIL] Settlement Rejected:", result["error"])
+
     print("-" * 50)
-    print("Summary of Mandate JSON:")
-    print(json.dumps(payment_mandate.model_dump(), indent=2)[:500] + "...")
 
 if __name__ == "__main__":
     run_nsdl_instruction_demo()
